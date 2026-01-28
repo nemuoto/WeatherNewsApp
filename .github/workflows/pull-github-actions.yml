@@ -1,0 +1,40 @@
+name: Upload to S3 on PR
+
+# トリガー: プルリクエストが作成(opened)、更新(synchronize)、再オープン(reopened)された時
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      # 1. コードのチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. AWS認証情報の設定
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1 # 必要に応じて変更してください（例：東京）
+
+      # 3. S3へのアップロード (syncコマンド)
+      # --delete: リポジトリにないファイルをS3側から削除する場合に付与
+      # --exclude: .gitフォルダなど不要なファイルを除外
+      - name: Sync files to S3
+run: |
+          # S3同期（最後の行の \ を消すのがポイント！）
+          aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }} \
+            --delete \
+            --exclude ".git/*" \
+            --exclude ".github/*"
+
+          # Terraform実行（順番に実行）
+          terraform init
+          terraform apply -auto-approve
