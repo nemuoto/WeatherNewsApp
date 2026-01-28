@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Serverless Simple Weather News (No S3 Creation) - API GW, Lambda,
+  DynamoDB, Cognito
+
+Parameters:
+  # 既存のS3バケット名を指定してください
+  S3BucketName:
+    Type: String
+    Default: aws-serverless-simple-weather-news-admin-v1
+    Description: The name of the EXISTING S3 bucket where lambda_function.zip is stored.
+
+  # S3バケット内のZipファイル名
+  LambdaZipKey:
+    Type: String
+    Default: lambda_function.zip
+    Description: The key name of the Lambda zip file.
+
+Resources:
+  # ------------------------------------------------------------
+  # 1. DynamoDB Table
+  # ------------------------------------------------------------
+  SimpleWeatherNewsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: SimpleWeatherNewsTable
+      BillingMode: PROVISIONED # 無料枠内(25GB, 25RCU/WCU)に収める設定
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      AttributeDefinitions:
+        - AttributeName: Cityid
+          AttributeType: 'N' # 数値
+      KeySchema:
+        - AttributeName: Cityid
+          KeyType: HASH # 主キー
+
+  # ------------------------------------------------------------
+  # 2. Cognito User Pool & Client
+  # ------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: Simple Weather News Admin
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: simple-weather-news-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # ------------------------------------------------------------
+  # 3. IAM Role for Lambda
+  # ------------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan # /all で全件取得する場合に必要
+                  - dynamodb:Query
+                Resource: !GetAtt SimpleWeatherNewsTable.Arn
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+
+  # ------------------------------------------------------------
+  # 4. Lambda Function
+  # ------------------------------------------------------------
+  LambdaFunctions:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: simple-weather-news-function
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref S3BucketName # パラメータで指定した既存バケットを参照
+        S3Key: !Ref LambdaZipKey
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SimpleWeatherNewsTable
+      Timeout: 10
+      MemorySize: 128
+
+  # ------------------------------------------------------------
+  # 5. API Gateway (HTTP API)
+  # ------------------------------------------------------------
+  ApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: simple-weather-news-api
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*' # 本番運用時はS3のウェブサイトURLを指定してください
+        AllowMethods:
+          - GET
+          - PUT
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+          - Authorization
+
+  # Cognito Authorizer
+  ApiAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      Name: CognitoAuthorizer
+      ApiId: !Ref ApiGateway
+      AuthorizerType: JWT
+      IdentitySource:
+        - $request.header.Authorization
+      JwtConfiguration:
+        Audience:
+          - !Ref UserPoolClient
+        Issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+
+  # Lambda Integration
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt LambdaFunctions.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Routes
+  # GET /all
+  RouteGetAll:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: GET /all
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiAuthorizer
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref ApiIntegration
+
+  # GET /{cityId}
+  RouteGetCity:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: GET /{cityId}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiAuthorizer
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref ApiIntegration
+
+  # PUT /{cityId}
+  RoutePutCity:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ApiGateway
+      RouteKey: PUT /{cityId}
+      AuthorizationType: JWT
+      AuthorizerId: !Ref ApiAuthorizer
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref ApiIntegration
+
+  # Stage
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ApiGateway
+      StageName: $default
+      AutoDeploy: true
+
+  # Permission to invoke Lambda
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaFunctions
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway Endpoint URL
+    Value: !GetAtt ApiGateway.ApiEndpoint
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
