@@ -1,6 +1,9 @@
-name: Upload to S3 and Plan Terraform on PR
+name: Upload to S3 and Terraform Plan/Apply
 
 on:
+  push:
+    branches:
+      - main  # 任意のブランチに変更してください
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -9,18 +12,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # 将来的にOIDC認証を使う場合に必要
+      id-token: write
 
     steps:
       # 1. コードのチェックアウト
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Terraformのセットアップ (追加)
+      # 2. Terraformのセットアップ
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.0 # 使用しているバージョンに合わせてください
+          terraform_version: 1.5.0
 
       # 3. AWS認証情報の設定
       - name: Configure AWS Credentials
@@ -30,8 +33,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-1
 
-      # 4. S3へのアップロード (syncコマンド)
-      # インデントを修正しました
+      # 4. S3へのアップロード
       - name: Sync files to S3
         run: |
           aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }} \
@@ -39,12 +41,18 @@ jobs:
             --exclude ".git/*" \
             --exclude ".github/*" \
             --exclude "*.tf" \
-            --exclude "*.tfstate*" 
-          # Terraformファイル自体はS3公開用バケットには不要な場合が多いため除外推奨
+            --exclude "*.tfstate*"
 
       # 5. Terraform実行
-      # 注意: PR段階では apply せず plan (確認) だけにするのが安全です
+      - name: Terraform Init
+        run: terraform init
+
+      # PRの場合は Plan のみ実行
       - name: Terraform Plan
-        run: |
-          terraform init
-          terraform plan -no-color
+        if: github.event_name == 'pull_request'
+        run: terraform plan -no-color
+
+      # mainへのpushの場合は Apply を実行（必要に応じて追加）
+      - name: Terraform Apply
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve
