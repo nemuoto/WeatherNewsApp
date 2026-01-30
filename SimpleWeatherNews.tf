@@ -152,7 +152,7 @@ resource "aws_lambda_function" "main" {
 
   # S3からコードを取得
   s3_bucket = var.s3_bucket_name
-  s3_key    = var.lambda_zip_key
+  # s3_key    = var.lambda_zip_key
 
   environment {
     variables = {
