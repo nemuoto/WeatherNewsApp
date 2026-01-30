@@ -199,7 +199,7 @@ resource "aws_apigatewayv2_integration" "lambda" {
 # Routes
 resource "aws_apigatewayv2_route" "get_all" {
   api_id    = aws_apigatewayv2_api.main.id
-  route_key = "GET/all"
+  route_key = "GET /all"
 
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
