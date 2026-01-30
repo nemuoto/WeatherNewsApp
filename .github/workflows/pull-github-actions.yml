@@ -1,6 +1,5 @@
-name: Upload to S3 on PR
+name: Upload to S3 and Plan Terraform on PR
 
-# トリガー: プルリクエストが作成(opened)、更新(synchronize)、再オープン(reopened)された時
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -10,31 +9,42 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write # 将来的にOIDC認証を使う場合に必要
 
     steps:
       # 1. コードのチェックアウト
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. AWS認証情報の設定
+      # 2. Terraformのセットアップ (追加)
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0 # 使用しているバージョンに合わせてください
+
+      # 3. AWS認証情報の設定
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-northeast-1 # 必要に応じて変更してください（例：東京）
+          aws-region: ap-northeast-1
 
-      # 3. S3へのアップロード (syncコマンド)
-      # --delete: リポジトリにないファイルをS3側から削除する場合に付与
-      # --exclude: .gitフォルダなど不要なファイルを除外
+      # 4. S3へのアップロード (syncコマンド)
+      # インデントを修正しました
       - name: Sync files to S3
-run: |
-          # S3同期（最後の行の \ を消すのがポイント！）
+        run: |
           aws s3 sync . s3://${{ secrets.S3_BUCKET_NAME }} \
             --delete \
             --exclude ".git/*" \
-            --exclude ".github/*"
+            --exclude ".github/*" \
+            --exclude "*.tf" \
+            --exclude "*.tfstate*" 
+          # Terraformファイル自体はS3公開用バケットには不要な場合が多いため除外推奨
 
-          # Terraform実行（順番に実行）
+      # 5. Terraform実行
+      # 注意: PR段階では apply せず plan (確認) だけにするのが安全です
+      - name: Terraform Plan
+        run: |
           terraform init
-          terraform apply -auto-approve
+          terraform plan -no-color
