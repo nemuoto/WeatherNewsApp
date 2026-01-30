@@ -47,12 +47,11 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # PRの場合は Plan のみ実行
-      - name: Terraform Plan
-        if: github.event_name == 'pull_request'
-        run: terraform plan -no-color
-
       # mainへのpushの場合は Apply を実行（必要に応じて追加）
       - name: Terraform Apply
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve
+
+      - name: Cleanup Resources
+        if: always()
+        run: terraform destroy -auto-approve
